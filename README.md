@@ -2,7 +2,7 @@
 
 Aplicación multiplataforma desarrollada en **Flutter (Dart)** diseñada para resolver, analizar y visualizar gráficamente métodos numéricos orientados al cálculo de raíces de ecuaciones no lineales.
 
-## 🚀 Características Principales
+##  Características Principales
 
 * **Métodos Numéricos Implementados:**
   * **Newton-Raphson** (con cálculo de derivada analítica y respaldo por diferencias finitas).
@@ -22,14 +22,14 @@ Aplicación multiplataforma desarrollada en **Flutter (Dart)** diseñada para re
   * Botón de expansión para alternar a **Modo Pantalla Completa** de forma instantánea.
 * **Multiplataforma:** Optimizado para ejecutarse fluidamente en equipos de escritorio (**Windows**) y dispositivos móviles (**Android**).
 
-## 🛠️ Tecnologías y Dependencias
+##  Tecnologías y Dependencias
 
 * **Flutter SDK** (v3.x o superior)
 * **Dart**
 * **math_expressions** (^2.7.0) - Para el análisis sintáctico y evaluación dinámica de expresiones matemáticas.
 * **intl** (^0.19.0) - Para el manejo y formato de números.
 
-## 📦 Instrucciones de Instalación y Ejecución
+##  Instrucciones de Instalación y Ejecución
 
 1. Clona este repositorio o descarga el código fuente en tu computadora.
 2. Abre una terminal en la carpeta raíz del proyecto y descarga las dependencias:
