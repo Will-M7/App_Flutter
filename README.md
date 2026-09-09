@@ -35,3 +35,19 @@ Aplicación multiplataforma desarrollada en **Flutter (Dart)** diseñada para re
 2. Abre una terminal en la carpeta raíz del proyecto y descarga las dependencias:
    ```bash
    flutter pub get
+flutter pub get
+Ejecuta la aplicación según la plataforma de tu preferencia:
+
+Para Windows (Escritorio):
+
+Bash
+flutter run -d windows
+Para Android (Con cable USB y depuración activada):
+
+Bash
+flutter run -d android
+Para generar el archivo instalable APK (Android):
+
+Bash
+flutter build apk --release
+El archivo ejecutable se generará en la ruta: build\app\outputs\flutter-apk\app-release.apk
