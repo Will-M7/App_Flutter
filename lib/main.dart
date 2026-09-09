@@ -104,6 +104,7 @@ class IterationStep {
   final double? prevX;
   final double? prevFx;
   final double? nextX;
+  final double? nextFx;
   final double? derivativeFx;
   final double? intervalA;
   final double? fa;
@@ -120,6 +121,7 @@ class IterationStep {
     this.prevX,
     this.prevFx,
     this.nextX,
+    this.nextFx,
     this.derivativeFx,
     this.intervalA,
     this.fa,
@@ -143,6 +145,7 @@ class CalculationResult {
   final List<IterationStep> steps;
   final String? errorMessage;
   final int executionTimeMs;
+  final int totalIterations;
 
   const CalculationResult({
     required this.isSuccess,
@@ -156,6 +159,7 @@ class CalculationResult {
     required this.steps,
     this.errorMessage,
     this.executionTimeMs = 0,
+    this.totalIterations = 0,
   });
 
   factory CalculationResult.failure({
@@ -165,6 +169,7 @@ class CalculationResult {
     required String errorMessage,
     List<IterationStep> steps = const [],
     int executionTimeMs = 0,
+    int totalIterations = 0,
   }) {
     return CalculationResult(
       isSuccess: false,
@@ -174,6 +179,7 @@ class CalculationResult {
       steps: steps,
       errorMessage: errorMessage,
       executionTimeMs: executionTimeMs,
+      totalIterations: totalIterations,
     );
   }
 }
@@ -415,7 +421,7 @@ class MathParserService {
 }
 
 // =============================================================================
-// SOLVERS NUMÉRICOS
+// SOLVERS NUMÉRICOS (CORREGIDOS MATEMÁTICAMENTE)
 // =============================================================================
 
 class NumericalSolversEngine {
@@ -423,7 +429,7 @@ class NumericalSolversEngine {
 
   NumericalSolversEngine(this.parser);
 
-  /// Método de Newton-Raphson
+  /// Método de Newton-Raphson corregido matemáticamente
   CalculationResult solveNewtonRaphson({
     required String rawFunction,
     required double x0,
@@ -444,71 +450,124 @@ class NumericalSolversEngine {
 
     final derivativeStr = parser.getAnalyticalDerivativeString(rawFunction);
     final List<IterationStep> steps = [];
+
     double currentX = x0;
+    double fx;
+    double dfx;
 
-    for (int i = 0; i <= maxIterations; i++) {
-      double fx;
-      double dfx;
+    try {
+      fx = parser.evaluate(rawFunction, currentX);
+      dfx = parser.evaluateDerivative(rawFunction, currentX);
+    } catch (e) {
+      sw.stop();
+      return CalculationResult.failure(
+        method: NumericalMethod.newtonRaphson,
+        rawFunction: rawFunction,
+        sanitizedFunction: sanitized,
+        errorMessage: 'Error al evaluar f($currentX) o f\'($currentX): $e',
+        executionTimeMs: sw.elapsedMilliseconds,
+      );
+    }
 
-      try {
-        fx = parser.evaluate(rawFunction, currentX);
-      } catch (e) {
-        sw.stop();
-        return CalculationResult.failure(
-          method: NumericalMethod.newtonRaphson,
-          rawFunction: rawFunction,
-          sanitizedFunction: sanitized,
-          errorMessage: 'Error al evaluar f($currentX): $e',
-          steps: steps,
-          executionTimeMs: sw.elapsedMilliseconds,
-        );
-      }
+    // Paso 0 inicial: x0, f(x0), f'(x0), Error = -
+    steps.add(IterationStep(
+      stepNumber: 0,
+      currentX: currentX,
+      currentFx: fx,
+      derivativeFx: dfx,
+      slope: dfx,
+      error: null,
+      note: 'Paso 0: x₀ = $currentX, f(x₀) = $fx, f\'(x₀) = $dfx',
+    ));
 
-      try {
-        dfx = parser.evaluateDerivative(rawFunction, currentX);
-      } catch (e) {
-        sw.stop();
-        return CalculationResult.failure(
-          method: NumericalMethod.newtonRaphson,
-          rawFunction: rawFunction,
-          sanitizedFunction: sanitized,
-          errorMessage: 'Error al evaluar f\'($currentX): $e',
-          steps: steps,
-          executionTimeMs: sw.elapsedMilliseconds,
-        );
-      }
+    // Si x0 ya es raíz exacta
+    if (fx.abs() < 1e-12) {
+      sw.stop();
+      return CalculationResult(
+        isSuccess: true,
+        method: NumericalMethod.newtonRaphson,
+        rawFunction: rawFunction,
+        sanitizedFunction: sanitized,
+        derivativeString: derivativeStr,
+        root: currentX,
+        finalFx: fx,
+        finalError: 0.0,
+        totalIterations: 0,
+        steps: steps,
+        executionTimeMs: sw.elapsedMilliseconds,
+      );
+    }
 
+    for (int i = 0; i < maxIterations; i++) {
       if (dfx.abs() < 1e-12) {
         sw.stop();
         return CalculationResult.failure(
           method: NumericalMethod.newtonRaphson,
           rawFunction: rawFunction,
           sanitizedFunction: sanitized,
-          errorMessage: 'Derivada nula (f\'($currentX) ≈ 0) en la iteración $i. La tangente es horizontal.',
+          errorMessage: 'Derivada nula (f\'($currentX) ≈ 0) en el paso $i. La recta tangente es horizontal.',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: i,
         );
       }
 
       final double nextX = currentX - (fx / dfx);
-      double? error;
-      if (i > 0) {
-        final denom = nextX.abs() > 1e-12 ? nextX.abs() : 1.0;
-        error = (nextX - currentX).abs() / denom;
+
+      double nextFx;
+      double nextDfx;
+      try {
+        nextFx = parser.evaluate(rawFunction, nextX);
+        nextDfx = parser.evaluateDerivative(rawFunction, nextX);
+      } catch (e) {
+        sw.stop();
+        return CalculationResult.failure(
+          method: NumericalMethod.newtonRaphson,
+          rawFunction: rawFunction,
+          sanitizedFunction: sanitized,
+          errorMessage: 'Error al evaluar f($nextX): $e',
+          steps: steps,
+          executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: i + 1,
+        );
       }
 
-      steps.add(IterationStep(
-        stepNumber: i,
-        currentX: currentX,
-        currentFx: fx,
-        derivativeFx: dfx,
+      // Error relativo decimal: Ea = abs((x_{i+1} - x_i) / x_{i+1})
+      final double denom = nextX.abs() > 1e-12 ? nextX.abs() : 1.0;
+      final double ea = (nextX - currentX).abs() / denom;
+
+      // Actualizar el paso anterior con nextX para que el gráfico trace la tangente geométrica
+      steps[i] = IterationStep(
+        stepNumber: steps[i].stepNumber,
+        currentX: steps[i].currentX,
+        currentFx: steps[i].currentFx,
+        derivativeFx: steps[i].derivativeFx,
+        prevX: steps[i].prevX,
+        prevFx: steps[i].prevFx,
         nextX: nextX,
-        slope: dfx,
-        error: error,
-        note: 'x_{$i} = $currentX, f(x) = $fx, f\'(x) = $dfx → x_{${i + 1}} = $nextX',
+        nextFx: nextFx,
+        slope: steps[i].slope,
+        error: steps[i].error,
+        note: steps[i].note,
+      );
+
+      // Registrar el paso i + 1 con el error relativo que LE CORRESPONDE a nextX
+      steps.add(IterationStep(
+        stepNumber: i + 1,
+        currentX: nextX,
+        currentFx: nextFx,
+        derivativeFx: nextDfx,
+        prevX: currentX,
+        prevFx: fx,
+        nextX: nextX,
+        nextFx: nextFx,
+        slope: nextDfx,
+        error: ea,
+        note: 'Paso ${i + 1}: x_{${i + 1}} = $nextX, f(x_{${i + 1}}) = $nextFx, Eₐ = $ea',
       ));
 
-      if (fx.abs() <= tolerance || (error != null && error <= tolerance)) {
+      // Comprobar criterio de parada: Ea <= tolerancia (o cero matemático exacto)
+      if (ea <= tolerance || nextFx.abs() < 1e-12) {
         sw.stop();
         return CalculationResult(
           isSuccess: true,
@@ -516,9 +575,10 @@ class NumericalSolversEngine {
           rawFunction: rawFunction,
           sanitizedFunction: sanitized,
           derivativeString: derivativeStr,
-          root: currentX,
-          finalFx: fx,
-          finalError: error ?? 0.0,
+          root: nextX,
+          finalFx: nextFx,
+          finalError: ea,
+          totalIterations: i + 1,
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
         );
@@ -530,13 +590,16 @@ class NumericalSolversEngine {
           method: NumericalMethod.newtonRaphson,
           rawFunction: rawFunction,
           sanitizedFunction: sanitized,
-          errorMessage: 'El método divergió (x_{${i+1}} = $nextX). Prueba con un valor inicial más cercano.',
+          errorMessage: 'El método divergió (x_{${i + 1}} = $nextX). Prueba con un valor inicial más cercano a la raíz.',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: i + 1,
         );
       }
 
       currentX = nextX;
+      fx = nextFx;
+      dfx = nextDfx;
     }
 
     sw.stop();
@@ -544,13 +607,14 @@ class NumericalSolversEngine {
       method: NumericalMethod.newtonRaphson,
       rawFunction: rawFunction,
       sanitizedFunction: sanitized,
-      errorMessage: 'Se superó el límite de $maxIterations iteraciones sin converger a la tolerancia $tolerance.',
+      errorMessage: 'Se superó el límite de $maxIterations iteraciones sin cumplir el error relativo $tolerance.',
       steps: steps,
       executionTimeMs: sw.elapsedMilliseconds,
+      totalIterations: maxIterations,
     );
   }
 
-  /// Método de la Secante
+  /// Método de la Secante corregido matemáticamente
   CalculationResult solveSecant({
     required String rawFunction,
     required double x0,
@@ -575,7 +639,7 @@ class NumericalSolversEngine {
         method: NumericalMethod.secant,
         rawFunction: rawFunction,
         sanitizedFunction: sanitized,
-        errorMessage: 'Los puntos iniciales x₀ y x₁ no pueden ser iguales.',
+        errorMessage: 'Los puntos iniciales x₀ y x₁ no pueden ser idénticos.',
       );
     }
 
@@ -609,14 +673,7 @@ class NumericalSolversEngine {
       );
     }
 
-    steps.add(IterationStep(
-      stepNumber: 0,
-      currentX: xPrev,
-      currentFx: fxPrev,
-      note: 'Punto inicial x₀ = $xPrev, f(x₀) = $fxPrev',
-    ));
-
-    if (fxPrev.abs() <= tolerance) {
+    if (fxPrev.abs() < 1e-12) {
       sw.stop();
       return CalculationResult(
         isSuccess: true,
@@ -626,28 +683,13 @@ class NumericalSolversEngine {
         root: xPrev,
         finalFx: fxPrev,
         finalError: 0.0,
+        totalIterations: 0,
         steps: steps,
         executionTimeMs: sw.elapsedMilliseconds,
       );
     }
 
-    final double err1 = (xCurr - xPrev).abs() / (xCurr.abs() > 1e-12 ? xCurr.abs() : 1.0);
-    final double slope0 = (fxCurr - fxPrev) / (xCurr - xPrev);
-    final double nextX0 = xCurr - (fxCurr * (xCurr - xPrev)) / (fxCurr - fxPrev == 0 ? 1e-14 : (fxCurr - fxPrev));
-
-    steps.add(IterationStep(
-      stepNumber: 1,
-      currentX: xCurr,
-      currentFx: fxCurr,
-      prevX: xPrev,
-      prevFx: fxPrev,
-      nextX: nextX0,
-      slope: slope0,
-      error: err1,
-      note: 'Punto inicial x₁ = $xCurr, f(x₁) = $fxCurr',
-    ));
-
-    if (fxCurr.abs() <= tolerance || err1 <= tolerance) {
+    if (fxCurr.abs() < 1e-12) {
       sw.stop();
       return CalculationResult(
         isSuccess: true,
@@ -656,13 +698,14 @@ class NumericalSolversEngine {
         sanitizedFunction: sanitized,
         root: xCurr,
         finalFx: fxCurr,
-        finalError: err1,
+        finalError: 0.0,
+        totalIterations: 0,
         steps: steps,
         executionTimeMs: sw.elapsedMilliseconds,
       );
     }
 
-    for (int i = 2; i <= maxIterations + 1; i++) {
+    for (int k = 1; k <= maxIterations; k++) {
       final double denom = fxCurr - fxPrev;
       if (denom.abs() < 1e-14) {
         sw.stop();
@@ -670,9 +713,10 @@ class NumericalSolversEngine {
           method: NumericalMethod.secant,
           rawFunction: rawFunction,
           sanitizedFunction: sanitized,
-          errorMessage: 'División por cero en el paso $i: f(x_{${i-1}}) ≈ f(x_{${i-2}}). Secante horizontal.',
+          errorMessage: 'División por cero en la iteración $k: f(x_{${k}}) ≈ f(x_{${k-1}}). Recta secante horizontal.',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: k - 1,
         );
       }
 
@@ -691,24 +735,28 @@ class NumericalSolversEngine {
           errorMessage: 'Error al evaluar f($xNext): $e',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: k,
         );
       }
 
-      final double error = (xNext - xCurr).abs() / (xNext.abs() > 1e-12 ? xNext.abs() : 1.0);
+      // Error relativo de la nueva aproximación x_{i+1} respecto a x_i
+      final double denomErr = xNext.abs() > 1e-12 ? xNext.abs() : 1.0;
+      final double ea = (xNext - xCurr).abs() / denomErr;
 
       steps.add(IterationStep(
-        stepNumber: i,
-        currentX: xNext,
-        currentFx: fxNext,
-        prevX: xCurr,
-        prevFx: fxCurr,
+        stepNumber: k,
+        prevX: xPrev,
+        prevFx: fxPrev,
+        currentX: xCurr,
+        currentFx: fxCurr,
         nextX: xNext,
+        nextFx: fxNext,
         slope: slope,
-        error: error,
-        note: 'Secante entre ($xCurr, $fxCurr) y ($xNext, $fxNext)',
+        error: ea,
+        note: 'Iteración $k: x_{${k-1}} = $xPrev, x_$k = $xCurr → x_{${k+1}} = $xNext, Eₐ = $ea',
       ));
 
-      if (fxNext.abs() <= tolerance || error <= tolerance) {
+      if (ea <= tolerance || fxNext.abs() < 1e-12) {
         sw.stop();
         return CalculationResult(
           isSuccess: true,
@@ -717,9 +765,23 @@ class NumericalSolversEngine {
           sanitizedFunction: sanitized,
           root: xNext,
           finalFx: fxNext,
-          finalError: error,
+          finalError: ea,
+          totalIterations: k,
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+        );
+      }
+
+      if (xNext.isNaN || xNext.isInfinite || xNext.abs() > 1e12) {
+        sw.stop();
+        return CalculationResult.failure(
+          method: NumericalMethod.secant,
+          rawFunction: rawFunction,
+          sanitizedFunction: sanitized,
+          errorMessage: 'El método divergió (x_{${k+1}} = $xNext). Prueba con otros valores iniciales.',
+          steps: steps,
+          executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: k,
         );
       }
 
@@ -734,13 +796,14 @@ class NumericalSolversEngine {
       method: NumericalMethod.secant,
       rawFunction: rawFunction,
       sanitizedFunction: sanitized,
-      errorMessage: 'Se alcanzó el límite de $maxIterations iteraciones sin converger.',
+      errorMessage: 'Se alcanzó el límite de $maxIterations iteraciones sin cumplir el error relativo $tolerance.',
       steps: steps,
       executionTimeMs: sw.elapsedMilliseconds,
+      totalIterations: maxIterations,
     );
   }
 
-  /// Método de Regla Falsa (Posición Falsa)
+  /// Método de Regla Falsa (Posición Falsa) corregido matemáticamente
   CalculationResult solveFalsePosition({
     required String rawFunction,
     required double aVal,
@@ -818,9 +881,41 @@ class NumericalSolversEngine {
       );
     }
 
+    if (fa.abs() < 1e-12) {
+      sw.stop();
+      return CalculationResult(
+        isSuccess: true,
+        method: NumericalMethod.falsePosition,
+        rawFunction: rawFunction,
+        sanitizedFunction: sanitized,
+        root: a,
+        finalFx: fa,
+        finalError: 0.0,
+        totalIterations: 0,
+        steps: steps,
+        executionTimeMs: sw.elapsedMilliseconds,
+      );
+    }
+
+    if (fb.abs() < 1e-12) {
+      sw.stop();
+      return CalculationResult(
+        isSuccess: true,
+        method: NumericalMethod.falsePosition,
+        rawFunction: rawFunction,
+        sanitizedFunction: sanitized,
+        root: b,
+        finalFx: fb,
+        finalError: 0.0,
+        totalIterations: 0,
+        steps: steps,
+        executionTimeMs: sw.elapsedMilliseconds,
+      );
+    }
+
     double? prevC;
 
-    for (int i = 0; i <= maxIterations; i++) {
+    for (int k = 1; k <= maxIterations; k++) {
       final double denom = fb - fa;
       if (denom.abs() < 1e-15) {
         sw.stop();
@@ -828,9 +923,10 @@ class NumericalSolversEngine {
           method: NumericalMethod.falsePosition,
           rawFunction: rawFunction,
           sanitizedFunction: sanitized,
-          errorMessage: 'Denominador nulo f(b) - f(a) en la iteración $i.',
+          errorMessage: 'Denominador nulo f(b) - f(a) en la iteración $k.',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: k - 1,
         );
       }
 
@@ -849,29 +945,32 @@ class NumericalSolversEngine {
           errorMessage: 'Error al evaluar f($c): $e',
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
+          totalIterations: k,
         );
       }
 
-      double? error;
+      double? ea;
       if (prevC != null) {
-        final denomErr = c.abs() > 1e-12 ? c.abs() : 1.0;
-        error = (c - prevC).abs() / denomErr;
+        final double denomErr = c.abs() > 1e-12 ? c.abs() : 1.0;
+        ea = (c - prevC).abs() / denomErr;
       }
 
+      // Guardar PRIMERO la fila calculada
       steps.add(IterationStep(
-        stepNumber: i + 1,
+        stepNumber: k,
+        intervalA: a,
+        intervalB: b,
+        fa: fa,
+        fb: fb,
         currentX: c,
         currentFx: fc,
-        intervalA: a,
-        fa: fa,
-        intervalB: b,
-        fb: fb,
         slope: slope,
-        error: error,
-        note: 'Intervalo [$a, $b] → c = $c, f(c) = $fc',
+        error: ea,
+        note: 'Iteración $k: [$a, $b] → c = $c, f(c) = $fc, Eₐ = ${ea ?? "-"}',
       ));
 
-      if (fc.abs() <= tolerance || (error != null && error <= tolerance)) {
+      // DESPUÉS comprobar criterio de parada
+      if ((ea != null && ea <= tolerance) || fc.abs() < 1e-12) {
         sw.stop();
         return CalculationResult(
           isSuccess: true,
@@ -880,12 +979,14 @@ class NumericalSolversEngine {
           sanitizedFunction: sanitized,
           root: c,
           finalFx: fc,
-          finalError: error ?? 0.0,
+          finalError: ea ?? 0.0,
+          totalIterations: k,
           steps: steps,
           executionTimeMs: sw.elapsedMilliseconds,
         );
       }
 
+      // Actualizar intervalo según signo
       if (fa * fc < 0) {
         b = c;
         fb = fc;
@@ -902,15 +1003,16 @@ class NumericalSolversEngine {
       method: NumericalMethod.falsePosition,
       rawFunction: rawFunction,
       sanitizedFunction: sanitized,
-      errorMessage: 'Se alcanzó el límite de $maxIterations iteraciones sin alcanzar la tolerancia $tolerance.',
+      errorMessage: 'Se alcanzó el límite de $maxIterations iteraciones sin cumplir el error relativo $tolerance.',
       steps: steps,
       executionTimeMs: sw.elapsedMilliseconds,
+      totalIterations: maxIterations,
     );
   }
 }
 
 // =============================================================================
-// CUSTOM PAINTER DEL GRÁFICO 2D (CON RECORTE ESTRICTO Y EJES NUMERADOS)
+// CUSTOM PAINTER DEL GRÁFICO 2D (SUAVIZADO Y RECORTE ESTRICTO)
 // =============================================================================
 
 class FunctionGraphPainter extends CustomPainter {
@@ -974,7 +1076,7 @@ class FunctionGraphPainter extends CustomPainter {
     // 3. Ejes Cartesianos con Marcas y Numeración
     _drawAxesWithTicks(canvas, size, toScreenX, toScreenY, axisColor, textStyle);
 
-    // 4. Curva continua f(x)
+    // 4. Curva continua f(x) suavizada
     _drawFunctionCurve(canvas, size, toScreenX, toScreenY, curveColor);
 
     // 5. Geometría interactiva paso a paso
@@ -1007,7 +1109,8 @@ class FunctionGraphPainter extends CustomPainter {
   ) {
     final gridPaint = Paint()
       ..color = gridColor
-      ..strokeWidth = 1.0;
+      ..strokeWidth = 1.0
+      ..isAntiAlias = true;
 
     final double stepX = _calculateOptimalGridStep(maxX - minX);
     final double stepY = _calculateOptimalGridStep(maxY - minY);
@@ -1035,11 +1138,13 @@ class FunctionGraphPainter extends CustomPainter {
   ) {
     final axisPaint = Paint()
       ..color = axisColor
-      ..strokeWidth = 1.8;
+      ..strokeWidth = 1.8
+      ..isAntiAlias = true;
 
     final tickPaint = Paint()
       ..color = axisColor
-      ..strokeWidth = 1.5;
+      ..strokeWidth = 1.5
+      ..isAntiAlias = true;
 
     final double originX = toX(0.0).clamp(0.0, size.width);
     final double originY = toY(0.0).clamp(0.0, size.height);
@@ -1097,9 +1202,10 @@ class FunctionGraphPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
 
-    final int samples = (size.width * 1.5).toInt().clamp(250, 1200);
+    final int samples = (size.width * 0.8).toInt().clamp(200, 600);
     final double dx = (maxX - minX) / samples;
 
     Path? currentPath;
@@ -1119,7 +1225,7 @@ class FunctionGraphPainter extends CustomPainter {
         final sx = toX(x);
         final sy = toY(y);
 
-        if (sy < -size.height * 3 || sy > size.height * 4) {
+        if (sy < -size.height * 2.5 || sy > size.height * 3.5) {
           if (currentPath != null) {
             canvas.drawPath(currentPath, curvePaint);
             currentPath = null;
@@ -1166,7 +1272,8 @@ class FunctionGraphPainter extends CustomPainter {
     if (slope != null && slope.abs() > 1e-12) {
       final tangentPaint = Paint()
         ..color = const Color(0xFFFF3D00)
-        ..strokeWidth = 2.2;
+        ..strokeWidth = 2.2
+        ..isAntiAlias = true;
 
       final double tMinX = minX - (maxX - minX) * 0.3;
       final double tMaxX = maxX + (maxX - minX) * 0.3;
@@ -1179,7 +1286,7 @@ class FunctionGraphPainter extends CustomPainter {
     _drawPointWithHalo(canvas, Offset(ptSx, ptSy), const Color(0xFFFFC107), 6.0, 'P($xi, ${fxi.toStringAsFixed(2)})');
     _drawPointWithHalo(canvas, Offset(ptSx, zeroSy), Colors.amber, 4.5, 'x_{${step.stepNumber}}');
 
-    if (nextX != null) {
+    if (nextX != null && (nextX - xi).abs() > 1e-8) {
       final nextSx = toX(nextX);
       _drawPointWithHalo(canvas, Offset(nextSx, zeroSy), const Color(0xFF00E676), 6.5, 'x_{${step.stepNumber + 1}}');
       _drawArrow(canvas, Offset(ptSx, zeroSy), Offset(nextSx, zeroSy), const Color(0xFF00E676));
@@ -1215,7 +1322,8 @@ class FunctionGraphPainter extends CustomPainter {
 
       final secantPaint = Paint()
         ..color = const Color(0xFFFF3D00)
-        ..strokeWidth = 2.2;
+        ..strokeWidth = 2.2
+        ..isAntiAlias = true;
 
       final double slope = (currFx - prevFx) / (currX - prevX == 0 ? 1e-12 : (currX - prevX));
       final double tMinX = minX - (maxX - minX) * 0.3;
@@ -1266,7 +1374,8 @@ class FunctionGraphPainter extends CustomPainter {
 
       final chordPaint = Paint()
         ..color = const Color(0xFFFF3D00)
-        ..strokeWidth = 2.2;
+        ..strokeWidth = 2.2
+        ..isAntiAlias = true;
       canvas.drawLine(Offset(aSx, aSy), Offset(bSx, bSy), chordPaint);
 
       _drawPointWithHalo(canvas, Offset(aSx, aSy), Colors.tealAccent, 5.5, 'a ($a)');
@@ -1281,9 +1390,9 @@ class FunctionGraphPainter extends CustomPainter {
   }
 
   void _drawPointWithHalo(Canvas canvas, Offset center, Color color, double radius, String? label) {
-    canvas.drawCircle(center, radius * 2.0, Paint()..color = color.withOpacity(0.35));
-    canvas.drawCircle(center, radius, Paint()..color = color);
-    canvas.drawCircle(center, radius, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.5);
+    canvas.drawCircle(center, radius * 2.0, Paint()..color = color.withOpacity(0.35)..isAntiAlias = true);
+    canvas.drawCircle(center, radius, Paint()..color = color..isAntiAlias = true);
+    canvas.drawCircle(center, radius, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.5..isAntiAlias = true);
 
     if (label != null) {
       final textSpan = TextSpan(
@@ -1301,7 +1410,7 @@ class FunctionGraphPainter extends CustomPainter {
   }
 
   void _drawDashedLine(Canvas canvas, Offset p1, Offset p2, Color color, double strokeWidth) {
-    final paint = Paint()..color = color..strokeWidth = strokeWidth;
+    final paint = Paint()..color = color..strokeWidth = strokeWidth..isAntiAlias = true;
     const double dashWidth = 5.0;
     const double dashSpace = 4.0;
     final double distance = (p2 - p1).distance;
@@ -1323,7 +1432,7 @@ class FunctionGraphPainter extends CustomPainter {
 
   void _drawArrow(Canvas canvas, Offset start, Offset end, Color color) {
     if ((end - start).distance < 12) return;
-    final paint = Paint()..color = color..strokeWidth = 2.0;
+    final paint = Paint()..color = color..strokeWidth = 2.0..isAntiAlias = true;
     final mid = Offset((start.dx + end.dx) / 2, (start.dy + end.dy) / 2);
     final double angle = math.atan2(end.dy - start.dy, end.dx - start.dx);
     const double arrowSize = 6.0;
@@ -1375,7 +1484,7 @@ class FunctionGraphPainter extends CustomPainter {
 }
 
 // =============================================================================
-// WIDGET INTERACTIVO DEL GRÁFICO 2D (CON PANTALLA COMPLETA Y NAVEGACIÓN)
+// WIDGET INTERACTIVO DEL GRÁFICO 2D (CON GESTOS SUAVIZADOS Y CONTROLADOS)
 // =============================================================================
 
 class InteractiveGraphWidget extends StatefulWidget {
@@ -1406,7 +1515,10 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
   double _minY = -5.0;
   double _maxY = 5.0;
   bool _showGrid = true;
+
+  // Seguimiento de gestos suavizados
   Offset? _lastFocalPoint;
+  double _lastScale = 1.0;
 
   Timer? _playbackTimer;
   bool _isPlaying = false;
@@ -1503,17 +1615,25 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
     });
   }
 
+  /// Zoom con límites y centrado estable
   void _zoom(double factor, [Offset? focalPoint, Size? size]) {
+    final currentSpanX = _maxX - _minX;
+    final currentSpanY = _maxY - _minY;
+
+    // Limitar rango de zoom para evitar desbordamiento numérico
+    if (factor < 1.0 && (currentSpanX < 0.05 || currentSpanY < 0.05)) return;
+    if (factor > 1.0 && (currentSpanX > 5000 || currentSpanY > 5000)) return;
+
     setState(() {
       final cx = (size != null && focalPoint != null)
-          ? _minX + (focalPoint.dx / size.width) * (_maxX - _minX)
+          ? _minX + (focalPoint.dx / size.width) * currentSpanX
           : (_minX + _maxX) / 2;
       final cy = (size != null && focalPoint != null)
-          ? _minY + ((size.height - focalPoint.dy) / size.height) * (_maxY - _minY)
+          ? _minY + ((size.height - focalPoint.dy) / size.height) * currentSpanY
           : (_minY + _maxY) / 2;
 
-      final halfSpanX = ((_maxX - _minX) * factor) / 2;
-      final halfSpanY = ((_maxY - _minY) * factor) / 2;
+      final halfSpanX = (currentSpanX * factor) / 2;
+      final halfSpanY = (currentSpanY * factor) / 2;
 
       _minX = cx - halfSpanX;
       _maxX = cx + halfSpanX;
@@ -1522,10 +1642,13 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
     });
   }
 
+  /// Desplazamiento (Pan) con amortiguamiento suave
   void _pan(double dx, double dy, Size size) {
     if (size.width <= 0 || size.height <= 0) return;
-    final worldDx = -dx * (_maxX - _minX) / size.width;
-    final worldDy = dy * (_maxY - _minY) / size.height;
+
+    const double dampening = 0.90;
+    final worldDx = -dx * (_maxX - _minX) / size.width * dampening;
+    final worldDy = dy * (_maxY - _minY) / size.height * dampening;
 
     setState(() {
       _minX += worldDx;
@@ -1581,7 +1704,7 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
-          // 1. ÁREA DEL LIENZO CON CLIPRECT ESTRICTO
+          // 1. ÁREA DEL LIENZO CON CLIPRECT ESTRICTO Y GESTOS SUAVIZADOS
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -1590,26 +1713,46 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
                 return ClipRect(
                   child: Stack(
                     children: [
-                      // Lienzo Interactivo
+                      // Lienzo Interactivo con gestos táctiles calibrados
                       Listener(
                         onPointerSignal: (signal) {
                           if (signal is PointerScrollEvent) {
-                            final factor = signal.scrollDelta.dy > 0 ? 1.15 : 0.85;
+                            final factor = signal.scrollDelta.dy > 0 ? 1.10 : 0.90;
                             _zoom(factor, signal.localPosition, size);
                           }
                         },
                         child: GestureDetector(
-                          onScaleStart: (details) => _lastFocalPoint = details.localFocalPoint,
+                          onScaleStart: (details) {
+                            _lastFocalPoint = details.localFocalPoint;
+                            _lastScale = 1.0;
+                          },
                           onScaleUpdate: (details) {
                             if (_lastFocalPoint != null) {
                               final dx = details.localFocalPoint.dx - _lastFocalPoint!.dx;
                               final dy = details.localFocalPoint.dy - _lastFocalPoint!.dy;
-                              _pan(dx, dy, size);
+                              if (dx.abs() > 0.2 || dy.abs() > 0.2) {
+                                _pan(dx, dy, size);
+                              }
                               _lastFocalPoint = details.localFocalPoint;
                             }
+
                             if (details.scale != 1.0) {
-                              _zoom(1.0 / details.scale, details.localFocalPoint, size);
+                              final double currentScale = details.scale;
+                              if (_lastScale != 0.0) {
+                                final double rawDelta = currentScale / _lastScale;
+                                const double pinchDampening = 0.40;
+                                final double smoothedDelta = 1.0 + (rawDelta - 1.0) * pinchDampening;
+
+                                if ((smoothedDelta - 1.0).abs() > 0.002) {
+                                  _zoom(1.0 / smoothedDelta, details.localFocalPoint, size);
+                                }
+                              }
+                              _lastScale = currentScale;
                             }
+                          },
+                          onScaleEnd: (_) {
+                            _lastFocalPoint = null;
+                            _lastScale = 1.0;
                           },
                           onDoubleTap: _autoFitView,
                           child: CustomPaint(
@@ -1670,12 +1813,12 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
                               IconButton(
                                 icon: const Icon(Icons.add, size: 20),
                                 tooltip: 'Acercar (+)',
-                                onPressed: () => _zoom(0.8),
+                                onPressed: () => _zoom(0.85),
                               ),
                               IconButton(
                                 icon: const Icon(Icons.remove, size: 20),
                                 tooltip: 'Alejar (-)',
-                                onPressed: () => _zoom(1.25),
+                                onPressed: () => _zoom(1.18),
                               ),
                               IconButton(
                                 icon: const Icon(Icons.crop_free, size: 20),
@@ -1839,7 +1982,7 @@ class _InteractiveGraphWidgetState extends State<InteractiveGraphWidget> {
 }
 
 // =============================================================================
-// VISTA DE LA TABLA DE ITERACIONES (CUADROS)
+// VISTA DE LA TABLA DE ITERACIONES (CUADROS POR MÉTODO)
 // =============================================================================
 
 class IterationTableView extends StatelessWidget {
@@ -1859,23 +2002,43 @@ class IterationTableView extends StatelessWidget {
   String _format(double? val) {
     if (val == null) return '-';
     if (useScientificNotation) {
-      if (val.abs() == 0.0) return '0.0000e+0';
-      return val.toStringAsExponential(5);
+      if (val.abs() == 0.0) return '0.000000e+0';
+      return val.toStringAsExponential(6);
     } else {
-      if (val.abs() < 1e-12 && val != 0) return val.toStringAsExponential(5);
-      return val.toStringAsFixed(8).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+      if (val.abs() < 1e-12 && val != 0) return val.toStringAsExponential(6);
+      return val.toStringAsFixed(9).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
     }
   }
 
   void _copyToClipboard(BuildContext context) {
     if (result == null || result!.steps.isEmpty) return;
     final buf = StringBuffer();
-    buf.writeln('=== TABLA DE ITERACIONES: ${result!.method.displayName} ===');
+    final method = result!.method;
+
+    buf.writeln('=== TABLA DE ITERACIONES: ${method.displayName} ===');
     buf.writeln('Función: f(x) = ${result!.rawFunction}');
-    buf.writeln('Paso\tx_i\tf(x_i)\tError');
-    for (final s in result!.steps) {
-      buf.writeln('${s.stepNumber}\t${_format(s.currentX)}\t${_format(s.currentFx)}\t${_format(s.error)}');
+
+    switch (method) {
+      case NumericalMethod.newtonRaphson:
+        buf.writeln('Paso\tx_i\tf(x_i)\tf\'(x_i)\tError relativo (E_a)');
+        for (final s in result!.steps) {
+          buf.writeln('${s.stepNumber}\t${_format(s.currentX)}\t${_format(s.currentFx)}\t${_format(s.derivativeFx)}\t${s.error != null ? _format(s.error) : '-'}');
+        }
+        break;
+      case NumericalMethod.secant:
+        buf.writeln('Iteracion\tx_{i-1}\tx_i\tf(x_{i-1})\tf(x_i)\tx_{i+1}\tf(x_{i+1})\tError relativo (E_a)');
+        for (final s in result!.steps) {
+          buf.writeln('${s.stepNumber}\t${_format(s.prevX)}\t${_format(s.currentX)}\t${_format(s.prevFx)}\t${_format(s.currentFx)}\t${_format(s.nextX)}\t${_format(s.nextFx)}\t${s.error != null ? _format(s.error) : '-'}');
+        }
+        break;
+      case NumericalMethod.falsePosition:
+        buf.writeln('Iteracion\ta\tb\tf(a)\tf(b)\tc\tf(c)\tError relativo (E_a)');
+        for (final s in result!.steps) {
+          buf.writeln('${s.stepNumber}\t${_format(s.intervalA)}\t${_format(s.intervalB)}\t${_format(s.fa)}\t${_format(s.fb)}\t${_format(s.currentX)}\t${_format(s.currentFx)}\t${s.error != null ? _format(s.error) : '-'}');
+        }
+        break;
     }
+
     Clipboard.setData(ClipboardData(text: buf.toString()));
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Tabla de iteraciones copiada al portapapeles.'), duration: Duration(seconds: 2)),
@@ -1922,7 +2085,7 @@ class IterationTableView extends StatelessWidget {
                     Icon(Icons.table_chart_outlined, color: theme.colorScheme.primary),
                     const SizedBox(width: 8),
                     Text(
-                      'Cuadros de Iteraciones (${steps.length} pasos)',
+                      'Cuadros de Iteraciones (${steps.length} filas)',
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                   ],
@@ -1972,54 +2135,92 @@ class IterationTableView extends StatelessWidget {
   }
 
   List<DataColumn> _buildColumns(NumericalMethod method) {
-    return [
-      const DataColumn(label: Text('i (Paso)', style: TextStyle(fontWeight: FontWeight.bold))),
-      DataColumn(
-        label: Text(
-          method == NumericalMethod.falsePosition ? 'c (Aprox.)' : 'xᵢ',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-      ),
-      const DataColumn(label: Text('f(xᵢ)', style: TextStyle(fontWeight: FontWeight.bold))),
-      if (method == NumericalMethod.newtonRaphson)
-        const DataColumn(label: Text('f\'(xᵢ)', style: TextStyle(fontWeight: FontWeight.bold))),
-      if (method == NumericalMethod.falsePosition) ...[
-        const DataColumn(label: Text('a', style: TextStyle(fontWeight: FontWeight.bold))),
-        const DataColumn(label: Text('b', style: TextStyle(fontWeight: FontWeight.bold))),
-      ],
-      const DataColumn(label: Text('Error Aprox. (Eₐ)', style: TextStyle(fontWeight: FontWeight.bold))),
-    ];
+    switch (method) {
+      case NumericalMethod.newtonRaphson:
+        return const [
+          DataColumn(label: Text('Paso', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('xᵢ', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(xᵢ)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f\'(xᵢ)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('Error relativo (Eₐ)', style: TextStyle(fontWeight: FontWeight.bold))),
+        ];
+      case NumericalMethod.secant:
+        return const [
+          DataColumn(label: Text('Iteración', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('xᵢ₋₁', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('xᵢ', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(xᵢ₋₁)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(xᵢ)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('xᵢ₊₁', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(xᵢ₊₁)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('Error relativo (Eₐ)', style: TextStyle(fontWeight: FontWeight.bold))),
+        ];
+      case NumericalMethod.falsePosition:
+        return const [
+          DataColumn(label: Text('Iteración', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('a', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('b', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(a)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(b)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('c', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('f(c)', style: TextStyle(fontWeight: FontWeight.bold))),
+          DataColumn(label: Text('Error relativo (Eₐ)', style: TextStyle(fontWeight: FontWeight.bold))),
+        ];
+    }
   }
 
   List<DataCell> _buildCells(IterationStep step, NumericalMethod method) {
     const mono = TextStyle(fontFamily: 'RobotoMono', fontSize: 12);
-    return [
-      DataCell(
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(color: Colors.blueGrey.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
-          child: Text('${step.stepNumber}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+    final badge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(color: Colors.blueGrey.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+      child: Text('${step.stepNumber}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+    );
+
+    final errorCell = DataCell(
+      Text(
+        step.error != null ? _format(step.error) : '-',
+        style: TextStyle(
+          fontFamily: 'RobotoMono',
+          fontSize: 12,
+          color: step.error != null && step.error! <= 0.001 ? Colors.green : null,
+          fontWeight: step.error != null && step.error! <= 0.001 ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-      DataCell(Text(_format(step.currentX), style: mono)),
-      DataCell(Text(_format(step.currentFx), style: mono)),
-      if (method == NumericalMethod.newtonRaphson) DataCell(Text(_format(step.derivativeFx), style: mono)),
-      if (method == NumericalMethod.falsePosition) ...[
-        DataCell(Text(_format(step.intervalA), style: mono)),
-        DataCell(Text(_format(step.intervalB), style: mono)),
-      ],
-      DataCell(
-        Text(
-          step.error != null ? _format(step.error) : '-',
-          style: TextStyle(
-            fontFamily: 'RobotoMono',
-            fontSize: 12,
-            color: step.error != null && step.error! <= 0.001 ? Colors.green : null,
-            fontWeight: step.error != null && step.error! <= 0.001 ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ),
-    ];
+    );
+
+    switch (method) {
+      case NumericalMethod.newtonRaphson:
+        return [
+          DataCell(badge),
+          DataCell(Text(_format(step.currentX), style: mono)),
+          DataCell(Text(_format(step.currentFx), style: mono)),
+          DataCell(Text(_format(step.derivativeFx), style: mono)),
+          errorCell,
+        ];
+      case NumericalMethod.secant:
+        return [
+          DataCell(badge),
+          DataCell(Text(_format(step.prevX), style: mono)),
+          DataCell(Text(_format(step.currentX), style: mono)),
+          DataCell(Text(_format(step.prevFx), style: mono)),
+          DataCell(Text(_format(step.currentFx), style: mono)),
+          DataCell(Text(_format(step.nextX), style: mono)),
+          DataCell(Text(_format(step.nextFx), style: mono)),
+          errorCell,
+        ];
+      case NumericalMethod.falsePosition:
+        return [
+          DataCell(badge),
+          DataCell(Text(_format(step.intervalA), style: mono)),
+          DataCell(Text(_format(step.intervalB), style: mono)),
+          DataCell(Text(_format(step.fa), style: mono)),
+          DataCell(Text(_format(step.fb), style: mono)),
+          DataCell(Text(_format(step.currentX), style: mono)),
+          DataCell(Text(_format(step.currentFx), style: mono)),
+          errorCell,
+        ];
+    }
   }
 }
 
@@ -2040,11 +2241,11 @@ class ResultMetricCard extends StatelessWidget {
   String _format(double? val) {
     if (val == null) return '-';
     if (useScientificNotation) {
-      if (val.abs() == 0.0) return '0.0000e+0';
-      return val.toStringAsExponential(5);
+      if (val.abs() == 0.0) return '0.000000e+0';
+      return val.toStringAsExponential(6);
     } else {
-      if (val.abs() < 1e-12 && val != 0) return val.toStringAsExponential(5);
-      return val.toStringAsFixed(8).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+      if (val.abs() < 1e-12 && val != 0) return val.toStringAsExponential(6);
+      return val.toStringAsFixed(9).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
     }
   }
 
@@ -2180,7 +2381,7 @@ class ResultMetricCard extends StatelessWidget {
                 Expanded(
                   child: _buildTile(
                     label: 'Iteraciones Totales',
-                    value: '${res.steps.length}',
+                    value: '${res.totalIterations > 0 ? res.totalIterations : res.steps.length}',
                     icon: Icons.format_list_numbered,
                     color: Colors.indigo,
                   ),
@@ -2630,7 +2831,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     controller: _tolController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: InputDecoration(
-                      labelText: 'Tolerancia',
+                      labelText: 'Tolerancia (Eₐ)',
                       hintText: '0.0001',
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                       filled: true,
@@ -2743,10 +2944,10 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text('Ejemplos:', style: TextStyle(fontSize: 11, color: theme.hintColor)),
+                _buildExampleChip('e⁻ˣ+x²-3x-2', 'e^(-x)+x^2-3*x-2', '3', '4'),
                 _buildExampleChip('x³ - 4x - 9', 'x^3 - 4*x - 9', '2', '3'),
                 _buildExampleChip('cos(x) - x', 'cos(x) - x', '0.5', '1.0'),
                 _buildExampleChip('e⁻ˣ - x', 'e^(-x) - x', '0.0', '1.0'),
-                _buildExampleChip('2x² - 8', '2x^2 - 8', '1.0', '3.0'),
               ],
             ),
           ],
@@ -2840,7 +3041,7 @@ class _MetodosNumericosAppState extends State<MetodosNumericosApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: seedColor, brightness: Brightness.light, surface: const Color(0xFFF8FAFC)),
         scaffoldBackgroundColor: const Color(0xFFF1F5F9),
         appBarTheme: const AppBarTheme(centerTitle: false, elevation: 0, backgroundColor: Colors.white),
-        cardTheme: CardThemeData(color: Colors.white, elevation: 1.5, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+        cardTheme: CardTheme(color: Colors.white, elevation: 1.5, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
         fontFamily: 'Segoe UI',
       ),
       darkTheme: ThemeData(
@@ -2849,7 +3050,7 @@ class _MetodosNumericosAppState extends State<MetodosNumericosApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: seedColor, brightness: Brightness.dark, surface: const Color(0xFF1E293B)),
         scaffoldBackgroundColor: const Color(0xFF0F172A),
         appBarTheme: const AppBarTheme(centerTitle: false, elevation: 0, backgroundColor: Color(0xFF1E293B)),
-        cardTheme: CardThemeData(color: const Color(0xFF1E293B), elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+        cardTheme: CardTheme(color: const Color(0xFF1E293B), elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
         fontFamily: 'Segoe UI',
       ),
       home: HomeScreen(
